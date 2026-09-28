@@ -1,0 +1,79 @@
+name: 'Harness Pipeline Validate'
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: 'Directory containing the Makefile and Harness pipeline files'
+        type: string
+        default: '.'
+      file_pattern:
+        description: 'Extended regex (grep -E) matched against changed file paths, relative to working_directory'
+        type: string
+        default: '\.ya?ml$'
+      make_target:
+        description: 'Make target used to validate the changed files'
+        type: string
+        default: 'validate'
+      files_variable:
+        description: 'Make variable that receives the space-separated list of changed files'
+        type: string
+        default: 'FILES'
+
+jobs:
+  harness-pipeline-validate:
+    name: 'Harness Pipeline Validate'
+    # Only validate pull requests; github.event_name is the caller's triggering event
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+    # Checkout the repository with full history so the PR base commit is available for diffing
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # Collect files added, copied, modified or renamed in the PR (deleted files are excluded)
+    - name: Get Changed Files
+      id: changed
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        FILE_PATTERN: ${{ inputs.file_pattern }}
+      run: |
+        # --relative limits the diff to working_directory and prints paths relative to it
+        FILES=$(git diff --name-only --relative --diff-filter=ACMR "$BASE_SHA...$HEAD_SHA" \
+          | grep -E "$FILE_PATTERN" || true)
+
+        if [[ -z "$FILES" ]]; then
+          echo "No changed files match '$FILE_PATTERN', skipping validation"
+          echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Changed files to validate:"
+        echo "$FILES"
+        echo "any_changed=true" >> "$GITHUB_OUTPUT"
+        echo "files=$(echo "$FILES" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
+    - name: Install Dependencies
+      if: steps.changed.outputs.any_changed == 'true'
+      run: make setup
+
+    # Validate only the Harness pipeline files changed in this PR
+    - name: Harness Pipeline Validate
+      if: steps.changed.outputs.any_changed == 'true'
+      env:
+        MAKE_TARGET: ${{ inputs.make_target }}
+        FILES_VARIABLE: ${{ inputs.files_variable }}
+        CHANGED_FILES: ${{ steps.changed.outputs.files }}
+      run: make "$MAKE_TARGET" "$FILES_VARIABLE=$CHANGED_FILES"
