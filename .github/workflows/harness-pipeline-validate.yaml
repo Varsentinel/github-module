@@ -18,7 +18,7 @@ on:
       files_variable:
         description: 'Make variable that receives the space-separated list of changed files'
         type: string
-        default: 'FILES'
+        default: 'FILE'
 
 jobs:
   harness-pipeline-validate:
